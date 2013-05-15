@@ -10,7 +10,7 @@ using SlimDX.DXGI;
 using SlimDX.D3DCompiler;
 using SlimDX.Direct3D11;
 
-namespace AblativeDXView.Rendering
+namespace AblativeDX.Rendering
 {
     [StructLayout(LayoutKind.Sequential)]
     public struct VertexPositionColor

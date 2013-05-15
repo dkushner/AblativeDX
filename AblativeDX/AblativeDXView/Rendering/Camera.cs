@@ -8,7 +8,7 @@ using SlimDX;
 using SlimDX.DXGI;
 using SlimDX.Direct3D11;
 
-namespace AblativeDXView.Rendering
+namespace AblativeDX.Rendering
 {
     public class Camera
     {
@@ -32,24 +32,27 @@ namespace AblativeDXView.Rendering
 
         private Matrix projectionMatrix;
 
-        public Camera(Viewport viewport)
+        public Camera(int width, int height)
         {
-            var aspect = viewport.Width / viewport.Height;
-            var fov = 40.0f * ((float)Math.PI / 180.0f);
+            LookTarget = Vector3.UnitZ;
 
-            projectionMatrix = Matrix.PerspectiveFovLH(fov, aspect, 1.0f, 10000.0f);
+            var aspect = width / height;
+            var fov = 40.0f * ((float)Math.PI / 180.0f);
+            projectionMatrix = Matrix.PerspectiveFovLH(fov, aspect, 1.0f, 1000.0f);
+            projectionMatrix[2, 2] = projectionMatrix[2, 2] / 1000.0f;
+            projectionMatrix[3, 2] = projectionMatrix[3, 2] / 1000.0f;
         }
         private Matrix CreateView()
         {
 			Matrix rotMatrix;
             var up = Vector3.UnitY;
             var look = LookTarget;
-            var rot = Rotation * 0.0174532925f;
+            var rot = Rotation * ((float)Math.PI / 180.0f);
 
             Matrix.RotationYawPitchRoll(rot.Y, rot.X, rot.Z, out rotMatrix);
             Vector3.TransformCoordinate(ref look, ref rotMatrix, out look);
             Vector3.TransformCoordinate(ref up, ref rotMatrix, out up);
-            return Matrix.LookAtLH(Position, look, up);
+            return Matrix.LookAtLH(Position, Position + look, up);
         }
     }
 }

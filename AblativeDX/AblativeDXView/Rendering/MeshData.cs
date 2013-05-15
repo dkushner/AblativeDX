@@ -8,7 +8,7 @@ using SlimDX;
 using SlimDX.DXGI;
 using SlimDX.Direct3D11;
 
-namespace AblativeDXView.Rendering
+namespace AblativeDX.Rendering
 {
     public class MeshData
     {
