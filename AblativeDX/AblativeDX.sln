@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2012
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AblativeDX", "AblativeDXView\AblativeDX.csproj", "{1897E9D6-BB47-4A16-81BE-2B4F8A388559}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AblativeDX", "AblativeDX\AblativeDX.csproj", "{1897E9D6-BB47-4A16-81BE-2B4F8A388559}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
