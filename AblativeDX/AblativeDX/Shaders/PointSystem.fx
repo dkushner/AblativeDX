@@ -4,35 +4,32 @@
 struct VSPointIn
 {
 	float3 pos		:	POSITION;
-	float4 color	:	COLOR;
+};
+
+struct VSPassIn
+{
+	float4 pos		:	SV_POSITION;
+	float2 tex		:	TEXCOORD0;
+	float3 eyePos	:	TEXCOORD1;
 };
 
 struct GSParticleIn
 {
 	float3 pos		:	POSITION;
-	float4 color	:	COLOR;
-	float radius	:	RADIUS;
 };
 
-struct PSParticleIn
+struct GSOutput
 {
 	float4 pos		:	SV_Position;
 	float2 tex		:	TEXCOORD0;
 	float3 eyePos	:	TEXCOORD1;
-	float radius	:	TEXCOORD2;
-	float4 color	:	COLOR;
 };
 
-struct PSParticleOut
-{
-	float4 color	: SV_Target;
-	float depth		: SV_Depth;
-};
 
-/* * * * * * * * * * * 
- * CONSTANT BUFFERS  *
- * * * * * * * * * * */
-cbuffer MatrixBuffer : register(cb1)
+/* * * * * * * * *
+ * INPUT BUFFERS *
+ * * * * * * * * */
+cbuffer MatrixBuffer
 {
 	float4x4 InvView;
 	float4x4 ModelView;
@@ -56,22 +53,21 @@ cbuffer ImmutableBuffer
 		float2(0, 1),
 		float2(1, 1)
 	};
-	float3 LightDirection = float3(-0.5, -0.5, -2.0);
-}
+	float3 LightDirection = float3(-0.1, -0.1, -1.0);
+	float4 FluidColor = float4(0.0, 0.0, 1.0, 1.0);
+	float Radius = 10.0;
+};
 
 /* * * * * * * * * 
  * STATE OBJECTS *
  * * * * * * * * */
-
 BlendState AdditiveBlending
 {
 	AlphaToCoverageEnable = FALSE;
 	BlendEnable[0] = TRUE;
-	SrcBlend = SRC_ALPHA;
+	SrcBlend = ONE;
 	DestBlend = ONE;
 	BlendOp = ADD;
-	SrcBlendAlpha = ZERO;
-	DestBlendAlpha = ZERO;
 	BlendOpAlpha = ADD;
 	RenderTargetWriteMask[0] = 0x0F;
 };
@@ -103,38 +99,43 @@ GSParticleIn VSParticleMain(VSPointIn input)
 	GSParticleIn output;
 	
 	output.pos = input.pos;
-	output.color = input.color;
-	output.radius = 10.0;
+
+	return output;
+}
+
+GSOutput VSParticlePassThrough(VSPassIn input)
+{
+	GSOutput output;
+
+	output.pos = input.pos;
+	output.tex = input.tex;
+	output.eyePos = input.eyePos;
 
 	return output;
 }
 
 [maxvertexcount(4)]
-void GSParticleMain(point GSParticleIn input[1], inout TriangleStream<PSParticleIn> SpriteStream)
+void GSParticleMain(point GSParticleIn input[1], inout TriangleStream<GSOutput> SpriteStream)
 {
-	PSParticleIn output = (PSParticleIn)0;
+	GSOutput output = (GSOutput)0;
 
 	[unroll]
 	for(int i = 0; i < 4; i++)
 	{
-		float3 position = Positions[i] * input[0].radius;
+		float3 position = Positions[i] * Radius;
 		position = mul(position, (float3x3)InvView) + input[0].pos;
 		output.pos = mul(float4(position, 1.0), ModelViewProjection);
 		output.eyePos = mul(float4(position, 1.0), ModelView).xyz;
 
-		output.color = input[0].color;
 		output.tex = Texcoords[i];
-		output.radius = input[0].radius;
 		
 		SpriteStream.Append(output);
 	}
 	SpriteStream.RestartStrip();
 }
 
-PSParticleOut PSParticleMain(PSParticleIn input)
+float PSParticleDepth(GSOutput input) : SV_Depth
 {
-	PSParticleOut output;
-	
 	float3 norm;
 	norm.xy = (input.tex * 2.0) - 1.0;
 
@@ -142,30 +143,53 @@ PSParticleOut PSParticleMain(PSParticleIn input)
 	if(sqrad > 1.0) discard;
 	norm.z = -sqrt(1.0 - sqrad);
 
-	float4 pixelpos = float4(input.eyePos + (norm * input.radius), 1.0);
+	float4 pixelpos = float4(input.eyePos + (norm * Radius), 1.0);
 	float4 clspace = mul(pixelpos, Projection);
 	float diffuse = max(0.0, dot(norm, LightDirection));
 	
-	output.depth = clspace.z;
-	output.color = diffuse * input.color;
-
-	return output;
+	return clspace.z;
 }
 
+float PSParticleDensity(GSOutput input) : SV_Target1
+{
+	float3 norm;
+	norm.xy = (input.tex * 2.0) - 1.0;
+
+	float sqrad = dot(norm.xy, norm.xy);
+	if(sqrad > 1.0) discard;
+	norm.z = -sqrt(1.0 - sqrad);
+
+	float4 pixelpos = float4(input.eyePos + (norm * Radius), 1.0);
+	float4 clspace = mul(pixelpos, Projection);
+	float diffuse = max(0.0, dot(norm, LightDirection));
+
+	return diffuse * FluidColor;
+}
 
 
 /* * * * * * * * * * * * * *
  * TECHNIQUE DECLARATIONS  *
  * * * * * * * * * * * * * */
+GeometryShader gsCompiled = CompileShader(gs_5_0, GSParticleMain());
 technique11 RenderParticles
 {
-	pass DensityDepth
+	pass DepthPass
 	{
 		SetVertexShader(CompileShader(vs_5_0, VSParticleMain()));
-		SetGeometryShader(CompileShader(gs_5_0, GSParticleMain()));
-		SetPixelShader(CompileShader(ps_5_0, PSParticleMain()));
+		SetGeometryShader(ConstructGSWithSO(gsCompiled, "SV_Position.xyzw; TEXCOORD0.xy; TEXCOORD1.xyz"));
+		SetPixelShader(CompileShader(ps_5_0, PSParticleDepth()));
 
-		SetBlendState(NoBlending, float4(0.0f, 0.0f, 0.0f, 0.0f), 0xFFFFFFFF);
 		SetDepthStencilState(EnableDepth, 0);
+		SetBlendState(NoBlending, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+	}
+	
+	pass DensityPass
+	{
+		SetVertexShader(CompileShader(vs_5_0, VSParticlePassThrough()));
+		SetGeometryShader(NULL);
+		SetPixelShader(CompileShader(ps_5_0, PSParticleDensity()));
+
+		SetDepthStencilState(DisableDepth, 0);
+		SetBlendState(AdditiveBlending, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
 	}
 }

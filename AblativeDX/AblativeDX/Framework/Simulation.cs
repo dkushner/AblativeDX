@@ -154,7 +154,7 @@ namespace AblativeDX.Framework
             Device device;
             SwapChain swapChain;
 
-            Device.CreateWithSwapChain(DriverType.Hardware, DeviceCreationFlags.None, description, out device, out swapChain);
+            Device.CreateWithSwapChain(DriverType.Hardware, DeviceCreationFlags.Debug, description, out device, out swapChain);
             using (var factory = swapChain.GetParent<Factory>())
                 factory.SetWindowAssociation(mainForm.Handle, WindowAssociationFlags.IgnoreAltEnter);
 

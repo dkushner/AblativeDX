@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Drawing;
+using System.Runtime.InteropServices;
 
 using AblativeDX.Framework;
 using AblativeDX.Rendering;
@@ -25,28 +26,43 @@ namespace AblativeDX.Simulations
     {
         private Camera camera;
         private Effect effect;
+        private ComputeShader blurH;
+        private ComputeShader blurV;
 
         // Particle Data
         private Buffer positionBuffer;
-        private Buffer colorBuffer;
+        private Buffer streamOutBuffer;
         private VertexBufferBinding[] bindings;
+        private VertexBufferBinding[] streamInBindings;
+        private StreamOutputBufferBinding[] streamOutBindings;
 
         private InputLayout layout;
-        private InputElement[] elements;
+        private InputLayout streamLayout;
 
         private RenderTargetView sceneView;
+        private RenderTargetView densityView;
+        private ShaderResourceView densityResView;
         private DepthStencilView depthView;
+        private ShaderResourceView depthResView;
 
         private EffectMatrixVariable modelView;
         private EffectMatrixVariable inverseView;
         private EffectMatrixVariable projection;
         private EffectMatrixVariable modelViewProjection;
+        private EffectVectorVariable fluidColor;
 
         // Simulation Data
         private Physics physics;
         private Scene physicsScene;
-
         private Point lastMouse = Point.Empty;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct StreamOutData
+        {
+            Vector4 Position;
+            Vector2 TexCoord;
+            Vector3 EyePosition;
+        }
 
         protected override void Initialize()
         {
@@ -54,11 +70,7 @@ namespace AblativeDX.Simulations
         }
         protected override void LoadResources()
         {
-            CreatePrimaryRenderTarget();
-            CreateDepthBuffer();
-
-            Context.OutputMerger.SetTargets(depthView, sceneView);
-            Context.Rasterizer.SetViewports(new Viewport(0, 0, WindowWidth, WindowHeight, 0.0f, 1.0f));
+            CreateRenderTargets();
 
             camera = new Camera(WindowWidth, WindowHeight);
 
@@ -87,30 +99,14 @@ namespace AblativeDX.Simulations
                 });
             }
 
-            // Fill color buffer.
-            var randomColors = new List<Color4>();
-            for (int i = 0; i < 1024; i++)
+            streamOutBuffer = new Buffer(Device, new BufferDescription()
             {
-                var rc = new Color4
-                (
-                    1.0f,
-                    (float)generator.NextDouble() * 0.5f,
-                    (float)generator.NextDouble() * 0.5f,
-                    (float)generator.NextDouble() * 0.5f
-                );
-                randomColors.Add(rc);
-            }
-            using (var stream = new DataStream(randomColors.ToArray(), true, true))
-            {
-                colorBuffer = new Buffer(Device, stream, new BufferDescription()
-                {
-                    BindFlags = BindFlags.VertexBuffer,
-                    CpuAccessFlags = CpuAccessFlags.None,
-                    OptionFlags = ResourceOptionFlags.None,
-                    SizeInBytes = randomColors.Count * 16,
-                    Usage = ResourceUsage.Default
-                });
-            }
+                BindFlags = BindFlags.StreamOutput | BindFlags.VertexBuffer,
+                CpuAccessFlags = CpuAccessFlags.None,
+                OptionFlags = ResourceOptionFlags.None,
+                SizeInBytes = randomPoints.Count * Marshal.SizeOf(typeof(StreamOutData)) * 4,
+                Usage = ResourceUsage.Default
+            });
 
             // Compile shaders.
             var bytecode = ShaderBytecode.CompileFromFile("Shaders\\PointSystem.fx", "fx_5_0", ShaderFlags.Debug | ShaderFlags.OptimizationLevel0, EffectFlags.None);
@@ -122,27 +118,55 @@ namespace AblativeDX.Simulations
             modelViewProjection = effect.GetVariableByName("ModelViewProjection").AsMatrix();
 
             var particleTechnique = effect.GetTechniqueByName("RenderParticles");
-            var pass = particleTechnique.GetPassByName("DensityDepth");
+            var depthPass = particleTechnique.GetPassByName("DepthPass");
+            var densityPass = particleTechnique.GetPassByName("DensityPass");
 
-            layout = new InputLayout(Device, pass.Description.Signature, new[]
+
+            layout = new InputLayout(Device, depthPass.Description.Signature, new[]
             {
-                new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0),
-                new InputElement("COLOR", 0, Format.R32G32B32A32_Float, 0, 1)
+                new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0)
             });
+            streamLayout = new InputLayout(Device, densityPass.Description.Signature, new[]
+            {
+                new InputElement("SV_POSITION", 0, Format.R32G32B32A32_Float, 0, 0),
+                new InputElement("TEXCOORD", 0, Format.R32G32_Float, 0, 1),
+                new InputElement("TEXCOORD", 1, Format.R32G32B32_Float, 0, 2)
+            });
+
+            var defines = new[]
+            {
+                new ShaderMacro("BLK_SIZE", "128")
+            };
+            bytecode = ShaderBytecode.CompileFromFile("Shaders\\BilateralFilter.hlsl", "CSBilateralH", "cs_5_0", ShaderFlags.Debug | ShaderFlags.OptimizationLevel0, EffectFlags.None, defines, null);
+            blurH = new ComputeShader(Device, bytecode);
+
+            bytecode = ShaderBytecode.CompileFromFile("Shaders\\BilateralFilter.hlsl", "CSBilateralV", "cs_5_0", ShaderFlags.Debug | ShaderFlags.OptimizationLevel0, EffectFlags.None, defines, null);
+            blurV = new ComputeShader(Device, bytecode);
 
             bindings = new[]
             {
                 new VertexBufferBinding(positionBuffer, 12, 0),
-                new VertexBufferBinding(colorBuffer, 16, 0)
+            };
+            streamOutBindings = new[]
+            {
+                new StreamOutputBufferBinding(streamOutBuffer, 0)
+            };
+            streamInBindings = new[]
+            {
+                new VertexBufferBinding(streamOutBuffer, 36, 0),
             };
         }
         protected override void PreRender()
         {
             base.PreRender();
 
-            Context.OutputMerger.SetTargets(depthView, sceneView);
+            Context.OutputMerger.SetTargets(depthView, null, null);
+            Context.Rasterizer.SetViewports(new Viewport(0, 0, WindowWidth, WindowHeight, 0.0f, 1.0f));
+
             Context.ClearRenderTargetView(sceneView, new Color4(0.0f, 0.0f, 0.0f, 0.0f));
+            Context.ClearRenderTargetView(densityView, new Color4(0.0f, 0.0f, 0.0f, 0.0f));
             Context.ClearDepthStencilView(depthView, DepthStencilClearFlags.Depth, 1.0f, 0);
+        
         }
         protected override void Render()
         {
@@ -152,9 +176,32 @@ namespace AblativeDX.Simulations
             Context.InputAssembler.InputLayout = layout;
             Context.InputAssembler.PrimitiveTopology = PrimitiveTopology.PointList;
             Context.InputAssembler.SetVertexBuffers(0, bindings);
+            Context.StreamOutput.SetTargets(streamOutBindings);
+            
+            var technique = effect.GetTechniqueByIndex(0);
 
-            effect.GetTechniqueByName("RenderParticles").GetPassByIndex(0).Apply(Context);
+            // Render depth pass.
+            technique.GetPassByName("DepthPass").Apply(Context);
             Context.Draw(1024, 0);
+
+            // Unbind stream output and depth. Bind density render target.
+            Context.StreamOutput.SetTargets(null);
+            Context.OutputMerger.SetTargets((DepthStencilView)null, null, densityView);
+
+            Context.InputAssembler.InputLayout = streamLayout;
+            Context.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
+            Context.InputAssembler.SetVertexBuffers(0, streamInBindings);
+
+            // Render density pass.
+            technique.GetPassByName("DensityPass").Apply(Context);
+            Context.DrawAuto();
+
+            // Bind depth texture to CS.
+            Context.ComputeShader.SetShaderResource(depthResView, 0);
+            Context.ComputeShader.Set(blurH);
+
+            Context.ComputeShader.SetShaderResource(null, 0);
+
         }
         protected override void PostRender()
         {
@@ -194,21 +241,19 @@ namespace AblativeDX.Simulations
             lastMouse = e.Location;
         }
 
-        private void CreatePrimaryRenderTarget()
+        private void CreateRenderTargets()
         {
             Texture2D backBuffer = Texture2D.FromSwapChain<Texture2D>(SwapChain, 0);
             sceneView = new RenderTargetView(Device, backBuffer);
-        }
-        private void CreateDepthBuffer()
-        {
+
             Texture2DDescription depthBufferDesc = new Texture2DDescription
             {
                 ArraySize = 1,
-                BindFlags = BindFlags.DepthStencil,
+                BindFlags = BindFlags.DepthStencil | BindFlags.ShaderResource,
                 CpuAccessFlags = CpuAccessFlags.None,
-                Format = Format.D32_Float,
-                Width = 800,
-                Height = 600,
+                Format = Format.R32_Typeless,
+                Width = WindowWidth,
+                Height = WindowHeight,
                 MipLevels = 1,
                 OptionFlags = ResourceOptionFlags.None,
                 SampleDescription = new SampleDescription(1, 0),
@@ -226,6 +271,51 @@ namespace AblativeDX.Simulations
                 FirstArraySlice = 0
             };
             depthView = new DepthStencilView(Device, depthBuffer, depthStencilDesc);
+            ShaderResourceViewDescription depthResViewDesc = new ShaderResourceViewDescription
+            {
+                ArraySize = 0,
+                Format = Format.R32_Float,
+                Dimension = ShaderResourceViewDimension.Texture2D,
+                MipLevels = 1,
+                Flags = 0,
+                FirstArraySlice = 0
+            };
+            depthResView = new ShaderResourceView(Device, depthBuffer, depthResViewDesc);
+
+            Texture2DDescription densityBufferDesc = new Texture2DDescription
+            {
+                ArraySize = 1,
+                BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+                CpuAccessFlags = CpuAccessFlags.None,
+                Format = Format.R8G8B8A8_UNorm,
+                Width = WindowWidth,
+                Height = WindowHeight,
+                MipLevels = 1,
+                OptionFlags = ResourceOptionFlags.None,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default
+            };
+            Texture2D densityBuffer = new Texture2D(Device, densityBufferDesc);
+            
+            RenderTargetViewDescription densityViewDesc = new RenderTargetViewDescription
+            {
+                ArraySize = 0,
+                Format = Format.R8G8B8A8_UNorm,
+                Dimension = RenderTargetViewDimension.Texture2D,
+                MipSlice = 0,
+                FirstArraySlice = 0
+            };
+            densityView = new RenderTargetView(Device, densityBuffer, densityViewDesc);
+            ShaderResourceViewDescription densityResViewDesc = new ShaderResourceViewDescription
+            {
+                ArraySize = 0,
+                Format = Format.R8G8B8A8_UNorm,
+                Dimension = ShaderResourceViewDimension.Texture2D,
+                MipLevels = 1,
+                Flags = 0,
+                FirstArraySlice = 0
+            };
+            densityResView = new ShaderResourceView(Device, densityBuffer, densityResViewDesc);
         }
         private void UpdateMatrices()
         {

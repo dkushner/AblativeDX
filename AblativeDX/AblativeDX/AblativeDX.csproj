@@ -104,8 +104,8 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="Shaders\Basic.fx">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    <Content Include="Shaders\BilateralFilter.hlsl">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Shaders\PointSystem.fx">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
